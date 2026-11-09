@@ -1,0 +1,70 @@
+import torch
+import numpy as np
+import shap
+import matplotlib.pyplot as plt
+from transformers import pipeline
+
+
+# returns ALL class probabilities
+# A pipeline with top_k=None gives exactly that (one score per emotion,not just the argmax prediction).
+device = 0 if torch.cuda.is_available() else -1
+
+emotion_pipeline = pipeline(
+    "text-classification",
+    model=trainer.model,   # the fine-tuned model sitting in memory after trainer.train()
+    tokenizer=tokenizer,
+    top_k=None,             # return scores for all 7 labels
+    device=device,
+    truncation=True,
+    max_length=128
+)
+
+# Building the SHAP explainer
+# it masks groups of tokens and measures how much each group shifts each emotion's predicted probability.
+explainer = shap.Explainer(emotion_pipeline)
+
+# a small, informative sample to explain
+
+test_pred_labels = np.argmax(trainer.predict(test_dataset).predictions, axis=-1)
+
+correct_idx = [i for i, (p, t) in enumerate(zip(test_pred_labels, test_labels)) if p == t][:10]
+wrong_idx   = [i for i, (p, t) in enumerate(zip(test_pred_labels, test_labels)) if p != t][:10]
+
+sample_idx = correct_idx + wrong_idx
+sample_texts = [test_texts[i] for i in sample_idx]
+
+
+# Compute SHAP values
+# Resulting shape: (n_samples, n_tokens, n_classes)
+shap_values = explainer(sample_texts)
+
+# Per-example explanation 
+# Red tokens push the prediction TOWARD a label, blue tokens push AWAY from it. It includes 7 emotions for the same sentence. 
+shap.plots.text(shap_values[0])
+
+
+html_out = shap.plots.text(shap_values[0], display=False)
+with open('/kaggle/working/shap_example_0.html', 'w', encoding='utf-8') as f:
+    f.write(html_out)
+
+
+for emotion in LABELS:
+    plt.figure()
+    shap.plots.bar(shap_values[:, :, emotion].mean(0), show=False)
+    plt.title(f"Top tokens driving '{emotion}' predictions")
+    plt.tight_layout()
+    plt.savefig(f'/kaggle/working/shap_bar_{emotion}.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# For each wrong prediction, save an explanation showing what pushed the model toward the label it actually predicted.
+for local_i, global_i in enumerate(wrong_idx):
+    true_label = id2label[test_labels[global_i]]
+    pred_label = id2label[test_pred_labels[global_i]]
+    print(f"\nText: {test_texts[global_i]}")
+    print(f"True: {true_label}  |  Predicted: {pred_label}")
+
+    shap_idx = len(correct_idx) + local_i  # offset: wrong examples come after correct ones
+    html_out = shap.plots.text(shap_values[shap_idx, :, pred_label], display=False)
+    with open(f'/kaggle/working/shap_misclassified_{global_i}.html', 'w', encoding='utf-8') as f:
+        f.write(html_out)
